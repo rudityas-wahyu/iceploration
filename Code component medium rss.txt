@@ -1,0 +1,283 @@
+import * as React from "react"
+import { addPropertyControls, ControlType } from "framer"
+
+type Props = {
+    username: string
+    heading: string
+    subCopy: string
+    maxItems: number
+
+    headingFont: any
+    subCopyFont: any
+    articleTitleFont: any
+    articleDescFont: any
+    dateFont: any
+
+    headingColor: string
+    subCopyColor: string
+    articleTitleColor: string
+    articleDescColor: string
+    dateColor: string
+
+    showImage: boolean
+    imageWidth: number
+    imageHeight: number
+
+    padding: number
+}
+
+export default function MediumFeed(props: Props) {
+    const {
+        username,
+        heading,
+        subCopy,
+        maxItems,
+
+        headingFont,
+        subCopyFont,
+        articleTitleFont,
+        articleDescFont,
+        dateFont,
+
+        headingColor,
+        subCopyColor,
+        articleTitleColor,
+        articleDescColor,
+        dateColor,
+
+        showImage,
+        imageWidth,
+        imageHeight,
+
+        padding,
+    } = props
+
+    const [posts, setPosts] = React.useState<any[]>([])
+
+    React.useEffect(() => {
+        const fetchMediumFeed = async () => {
+            const url = `https://api.rss2json.com/v1/api.json?rss_url=https://medium.com/feed/@${username}`
+            try {
+                const res = await fetch(url)
+                const data = await res.json()
+
+                if (data.status === "ok") {
+                    const items = data.items
+                        .slice(0, maxItems)
+                        .map((item: any) => {
+                            const imgMatch = item.content.match(
+                                /<img[^>]+src=\"([^\">]+)\"/
+                            )
+                            return {
+                                title: item.title,
+                                link: item.link,
+                                pubDate: new Date(
+                                    item.pubDate
+                                ).toLocaleDateString("en-GB", {
+                                    day: "numeric",
+                                    month: "short",
+                                    year: "2-digit",
+                                }),
+                                contentSnippet:
+                                    item.description
+                                        .replace(/<[^>]+>/g, "")
+                                        .slice(0, 140) + "...",
+                                image: imgMatch ? imgMatch[1] : "",
+                            }
+                        })
+                    setPosts(items)
+                }
+            } catch (err) {
+                console.error("Failed to fetch Medium feed:", err)
+            }
+        }
+
+        if (username) fetchMediumFeed()
+    }, [username, maxItems])
+
+    return (
+        <div>
+            <div
+                style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    rowGap: 40,
+                    paddingBottom: 40,
+                }}
+            >
+                <div>
+                    <h2
+                        style={{
+                            ...headingFont,
+                            color: headingColor,
+                            margin: 0,
+                            paddingBottom: 8,
+                        }}
+                    >
+                        {heading}
+                    </h2>
+                    <p
+                        style={{
+                            ...subCopyFont,
+                            color: subCopyColor,
+                            marginTop: 4,
+                        }}
+                    >
+                        {subCopy}
+                    </p>
+                </div>
+            </div>
+
+            <div style={{ padding, display: "grid", gap: 24 }}>
+                {posts.map((post, i) => (
+                    <a
+                        key={i}
+                        href={post.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                            display: "flex",
+                            gap: 24,
+                            textDecoration: "none",
+                            color: "inherit",
+                            borderBottom: "1px solid #eee",
+                            paddingBottom: 24,
+                        }}
+                    >
+                        {showImage && post.image && (
+                            <img
+                                src={post.image}
+                                alt={post.title}
+                                style={{
+                                    width: imageWidth,
+                                    height: imageHeight,
+                                    objectFit: "cover",
+                                    borderRadius: 8,
+                                    flexShrink: 0,
+                                }}
+                            />
+                        )}
+                        <div>
+                            <h4
+                                style={{
+                                    margin: 0,
+                                    ...articleTitleFont,
+                                    color: articleTitleColor,
+                                }}
+                            >
+                                {post.title}
+                            </h4>
+                            <p
+                                style={{
+                                    margin: "4px 0",
+                                    ...dateFont,
+                                    color: dateColor,
+                                }}
+                            >
+                                {post.pubDate}
+                            </p>
+                            <p
+                                style={{
+                                    margin: 0,
+                                    ...articleDescFont,
+                                    color: articleDescColor,
+                                }}
+                            >
+                                {post.contentSnippet}
+                            </p>
+                        </div>
+                    </a>
+                ))}
+            </div>
+        </div>
+    )
+}
+
+addPropertyControls(MediumFeed, {
+    username: { type: ControlType.String, title: "Medium @username" },
+    heading: {
+        type: ControlType.String,
+        title: "Heading",
+        defaultValue: "Latest",
+    },
+    subCopy: {
+        type: ControlType.String,
+        title: "Sub Copy",
+        defaultValue: "Check out my latest writings on Medium.",
+    },
+    maxItems: {
+        type: ControlType.Number,
+        title: "Max Posts",
+        defaultValue: 3,
+        min: 1,
+        max: 10,
+    },
+
+    headingFont: {
+        type: ControlType.Font,
+        title: "Heading Font",
+        controls: "extended",
+    },
+    subCopyFont: {
+        type: ControlType.Font,
+        title: "Sub Copy Font",
+        controls: "extended",
+    },
+    articleTitleFont: {
+        type: ControlType.Font,
+        title: "Article Title Font",
+        controls: "extended",
+    },
+    articleDescFont: {
+        type: ControlType.Font,
+        title: "Article Description Font",
+        controls: "extended",
+    },
+    dateFont: {
+        type: ControlType.Font,
+        title: "Date Font",
+        controls: "extended",
+    },
+
+    headingColor: { type: ControlType.Color, title: "Heading Color" },
+    subCopyColor: { type: ControlType.Color, title: "Sub Copy Color" },
+    articleTitleColor: {
+        type: ControlType.Color,
+        title: "Article Title Color",
+    },
+    articleDescColor: {
+        type: ControlType.Color,
+        title: "Article Description Color",
+    },
+    dateColor: { type: ControlType.Color, title: "Date Color" },
+
+    showImage: {
+        type: ControlType.Boolean,
+        title: "Show Image",
+        defaultValue: true,
+    },
+    imageWidth: {
+        type: ControlType.Number,
+        title: "Image Width",
+        defaultValue: 120,
+        min: 50,
+        max: 300,
+        hidden: (props) => !props.showImage,
+    },
+    imageHeight: {
+        type: ControlType.Number,
+        title: "Image Height",
+        defaultValue: 80,
+        min: 50,
+        max: 300,
+        hidden: (props) => !props.showImage,
+    },
+
+    padding: {
+        type: ControlType.Number,
+        title: "Padding",
+        defaultValue: 20,
+        min: 0,
+        max: 100,
+    },
+})
