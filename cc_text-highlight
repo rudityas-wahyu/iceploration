@@ -1,0 +1,113 @@
+import React from "react"
+import { addPropertyControls, ControlType } from "framer"
+
+/**
+ * These annotations control how your component sizes
+ * Learn more: https://www.framer.com/developers/#code-components-auto-sizing
+ *
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any
+ */
+export default function TextHighlight2(props) {
+    const { 
+        highlightColor, 
+        font, 
+        padding, 
+        borderRadius, 
+        textColor, 
+        textContent, 
+        highlightedContent, 
+        afterText, 
+        showAfterText 
+    } = props
+    
+    const highlightStyle = {
+        backgroundColor: highlightColor,
+        padding: `${padding}px`, // Apply padding if provided
+        borderRadius: `${borderRadius}px`, // Apply border radius if provided
+        color: textColor,
+    }
+
+    return (
+        <div style={{ textAlign: "center" }}>
+            <span className="text2input">
+                {textContent} <span style={highlightStyle}>{highlightedContent}</span>
+                {showAfterText && <span> {afterText}</span>}
+                <style>
+                    {`
+                     .text2input {
+                         font-family: ${props.font.fontFamily};
+                         font-size: ${props.font.fontSize};
+                         font-style: ${props.font.fontStyle};
+                         font-weight: ${props.font.fontWeight};
+                         letter-spacing: ${props.font.letterSpacing};
+                         line-height: ${props.font.lineHeight};
+                         color: ${props.textColor};
+                        }
+                 `}
+                </style>
+            </span>
+        </div>
+    )
+}
+
+TextHighlight2.defaultProps = {
+    highlightColor: "#fff000",
+    padding: 25, // Default padding in pixels
+    borderRadius: 4, // Default border radius in pixels
+    textColor: "#000000",
+    textContent: "What an", // Default text content
+    highlightedContent: "expert opinion", // Default highlighted content
+    afterText: "from the design scientist?", // Default after text
+    showAfterText: true, // Default to show the after text
+}
+
+addPropertyControls(TextHighlight2, {
+    highlightColor: { type: ControlType.Color, title: "Highlight Color" },
+    font: {
+        type: "font",
+        title: "Font",
+        controls: "extended",
+    },
+    padding: {
+        type: ControlType.Number,
+        title: "Padding",
+        defaultValue: 4,
+        min: 0,
+        max: 20,
+        unit: "px",
+    },
+    borderRadius: {
+        type: ControlType.Number,
+        title: "Border Radius",
+        defaultValue: 4,
+        min: 0,
+        max: 20,
+        unit: "px",
+    },
+    textColor: {
+        type: ControlType.Color,
+        title: "Text Color",
+        defaultValue: "#000000",
+    },
+    textContent: {
+        type: ControlType.String,
+        title: "Text Content",
+        defaultValue: "What an",
+    },
+    highlightedContent: {
+        type: ControlType.String,
+        title: "Highlighted Text",
+        defaultValue: "expert opinion",
+    },
+    afterText: {
+        type: ControlType.String,
+        title: "After Text",
+        defaultValue: "from the design scientist?",
+    },
+    showAfterText: {
+        type: ControlType.Boolean,
+        title: "Show After Text",
+        defaultValue: true,
+    },
+})
