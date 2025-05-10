@@ -1,0 +1,37 @@
+import { Override } from "framer"
+import { useEffect } from "react"
+
+export function HighlightUnderlinedText(): Override {
+    useEffect(() => {
+        const timeoutId = setTimeout(() => {
+            // Query all elements with the class name 'framer-text'
+            const elements = document.querySelectorAll(".framer-text")
+
+            elements.forEach((el) => {
+                const element = el as HTMLElement
+
+                // Get computed styles of the element to check for underline
+                const computedStyle = window.getComputedStyle(element)
+
+                // Check if the text has underline decoration
+                if (computedStyle.textDecoration.includes("underline")) {
+                    // Check if the element contains specific text
+                    if (element.textContent?.includes("expert opinion")) {
+                        // Apply the highlight style only to underlined text with the specific content
+                        element.style.backgroundColor = "#FFF001" // Custom highlight color
+                        element.style.textDecoration = "none" // Remove underline
+                    }
+                    if (element.textContent?.includes("like a scientist")) {
+                        element.style.backgroundColor = "#FFF001" // Highlight for section 2 (different color)
+                        element.style.textDecoration = "none"
+                    }
+                }
+            })
+        }, 100)
+
+        // Clean up timeout on component unmount
+        return () => clearTimeout(timeoutId)
+    }, [])
+
+    return {}
+}
