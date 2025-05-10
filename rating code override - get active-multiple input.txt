@@ -1,0 +1,49 @@
+import { Override } from "framer"
+
+export function StarRatingOverride(): Override {
+    return {
+        onTap: (event) => {
+            const target = event.target as HTMLElement
+            const ratingLabel = target.closest("[aria-label]")?.getAttribute("aria-label")
+
+            if (ratingLabel) {
+                const rating = ratingLabel.replace("rating_", "") // Extract number
+                console.log("⭐ Selected Star Rating:", rating)
+
+                setTimeout(() => {
+                    const hiddenInput = document.querySelector('input[name="rating"]') as HTMLInputElement
+                    if (hiddenInput) {
+                        hiddenInput.value = rating
+                        console.log("✅ Star Rating Updated:", hiddenInput.value)
+                    } else {
+                        console.error("⚠️ Hidden input for Star Rating not found!")
+                    }
+                }, 100)
+            }
+        },
+    }
+}
+
+export function GlassRatingOverride(): Override {
+    return {
+        onTap: (event) => {
+            const target = event.target as HTMLElement
+            const sipLabel = target.closest("[aria-label]")?.getAttribute("aria-label")
+
+            if (sipLabel) {
+                const sipScore = sipLabel.replace("sip_", "") // Extract number
+                console.log("🥂 Selected SIP Score:", sipScore)
+
+                setTimeout(() => {
+                    const hiddenInput = document.querySelector('input[name="sip_score"]') as HTMLInputElement
+                    if (hiddenInput) {
+                        hiddenInput.value = sipScore
+                        console.log("✅ SIP Score Updated:", hiddenInput.value)
+                    } else {
+                        console.error("⚠️ Hidden input for SIP Score not found!")
+                    }
+                }, 100)
+            }
+        },
+    }
+}
