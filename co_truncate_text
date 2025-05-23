@@ -1,0 +1,18 @@
+import type { ComponentType, CSSProperties } from "react"
+
+export function withTruncate<P = {}>(
+    Component: ComponentType<P>
+): ComponentType<P> {
+    return (props: any) => {
+        const mergedStyle: CSSProperties = {
+            ...props.style,
+            display: "-webkit-box",
+            WebkitLineClamp: 1,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+        }
+
+        return <Component {...props} style={mergedStyle} />
+    }
+}
