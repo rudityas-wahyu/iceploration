@@ -1,0 +1,49 @@
+import * as React from "react";
+import { addPropertyControls, ControlType } from "framer";
+
+type Props = {
+  text: string;
+  rubyColor: string;
+  kanjiColor: string;
+  fontSize: number;
+};
+
+function parseFurigana(input: string, rubyColor: string, kanjiColor: string): string {
+  return input.replace(/\[([^\|\]]+)\|([^\]]+)\]/g, (_, kanji, kana) => {
+    return `<ruby><span style=\"color:${kanjiColor}\">${kanji}</span><rt style=\"color:${rubyColor}\">${kana}</rt></ruby>`;
+  });
+}
+
+export default function FuriganaText({ text, rubyColor, kanjiColor, fontSize }: Props) {
+  const parsedHTML = parseFurigana(text, rubyColor, kanjiColor).replace(/\n/g, "<br>");
+
+  return (
+    <div
+      style={{ fontSize: fontSize, lineHeight: 1.7 }}
+      dangerouslySetInnerHTML={{ __html: parsedHTML }}
+    />
+  );
+}
+
+addPropertyControls(FuriganaText, {
+  text: {
+    type: ControlType.String,
+    title: "Text",
+    defaultValue: "これは[日本|にほん]の文化です。[明日|あした]も晴れるでしょう。",
+  },
+  rubyColor: {
+    type: ControlType.Color,
+    title: "Ruby Color",
+    defaultValue: "#ff0000",
+  },
+  kanjiColor: {
+    type: ControlType.Color,
+    title: "Kanji Color",
+    defaultValue: "#000000",
+  },
+  fontSize: {
+    type: ControlType.Number,
+    title: "Font Size",
+    defaultValue: 18,
+  },
+});
