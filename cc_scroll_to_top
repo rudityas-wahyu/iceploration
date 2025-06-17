@@ -1,0 +1,104 @@
+import * as React from "react"
+import { Frame, addPropertyControls, ControlType } from "framer"
+
+export function ScrollToTopButton({ icon, size, sectionId, visibleOffset }) {
+    const [show, setShow] = React.useState(false)
+
+    React.useEffect(() => {
+        const handleScroll = () => {
+            const trigger = document.getElementById(sectionId)
+            if (!trigger) return
+
+            const triggerY = trigger.getBoundingClientRect().top + window.scrollY
+
+            // Trigger muncul saat scroll melebihi titik ini
+            const shouldShow = window.scrollY > triggerY + visibleOffset
+            setShow(shouldShow)
+        }
+
+        // Delay sedikit untuk memastikan DOM siap
+        setTimeout(handleScroll, 300)
+        window.addEventListener("scroll", handleScroll)
+        return () => window.removeEventListener("scroll", handleScroll)
+    }, [sectionId, visibleOffset])
+
+    const scrollToTop = () => {
+        window.scrollTo({ top: 0, behavior: "smooth" })
+    }
+
+    if (!show) return null
+
+    return (
+        <Frame
+            width={size}
+            height={size}
+            radius="50%"
+            background="rgba(255,255,255,0.9)"
+            style={{
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                cursor: "pointer",
+                position: "fixed",
+                bottom: 32,
+                right: 32,
+                zIndex: 9999,
+            }}
+            onTap={scrollToTop}
+        >
+            {icon ? (
+                <img
+                    src={icon}
+                    width={size * 0.5}
+                    height={size * 0.5}
+                    style={{ pointerEvents: "none" }}
+                />
+            ) : (
+                <div
+                    style={{
+                        width: 0,
+                        height: 0,
+                        borderLeft: `${size * 0.2}px solid transparent`,
+                        borderRight: `${size * 0.2}px solid transparent`,
+                        borderBottom: `${size * 0.3}px solid black`,
+                    }}
+                />
+            )}
+        </Frame>
+    )
+}
+
+ScrollToTopButton.defaultProps = {
+    size: 64,
+    sectionId: "hero",
+    visibleOffset: 0,
+}
+
+addPropertyControls(ScrollToTopButton, {
+    icon: {
+        type: ControlType.Image,
+        title: "Icon",
+    },
+    size: {
+        type: ControlType.Number,
+        defaultValue: 64,
+        min: 24,
+        max: 200,
+        step: 1,
+        title: "Size",
+    },
+    sectionId: {
+        type: ControlType.String,
+        defaultValue: "hero",
+        title: "Trigger Section ID",
+    },
+    visibleOffset: {
+        type: ControlType.Number,
+        defaultValue: 0,
+        min: -500,
+        max: 1000,
+        step: 10,
+        title: "Offset Y",
+    },
+})
