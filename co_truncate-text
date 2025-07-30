@@ -1,0 +1,17 @@
+import { Override, Data } from "framer"
+
+const state = Data({})
+
+export function useTruncateText(props): Override {
+    const maxLines = props.maxLines || 2
+
+    return {
+        style: {
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            WebkitLineClamp: `${maxLines}`,
+            textOverflow: "ellipsis",
+        },
+    }
+}
