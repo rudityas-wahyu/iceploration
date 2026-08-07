@@ -1,0 +1,384 @@
+import * as React from "react"
+import { addPropertyControls, ControlType, RenderTarget } from "framer"
+
+type FitMode = "cover" | "contain"
+
+interface ScrollScrubVideoProps {
+    video: string
+    poster?: string
+    scrollHeight: number
+    fit: FitMode
+    smoothing: number
+    frameRate: number
+    background: string
+    reverse: boolean
+    showProgress: boolean
+    style?: React.CSSProperties
+}
+
+export default function ScrollScrubVideo(props: ScrollScrubVideoProps) {
+    const {
+        video,
+        poster,
+        scrollHeight,
+        fit,
+        smoothing,
+        frameRate,
+        background,
+        reverse,
+        showProgress,
+        style,
+    } = props
+
+    const sectionRef = React.useRef<HTMLDivElement>(null)
+    const videoRef = React.useRef<HTMLVideoElement>(null)
+
+    const targetProgress = React.useRef(0)
+    const smoothProgress = React.useRef(0)
+    const lastRequestedTime = React.useRef(-1)
+    const pendingTime = React.useRef<number | null>(null)
+    const seeking = React.useRef(false)
+    const rafRef = React.useRef<number | null>(null)
+
+    const [displayProgress, setDisplayProgress] = React.useState(0)
+
+    const isCanvas = RenderTarget.current() === RenderTarget.canvas
+
+    React.useEffect(() => {
+        if (isCanvas) return
+
+        const section = sectionRef.current
+        const videoElement = videoRef.current
+
+        if (!section || !videoElement || !video) return
+
+        let duration = 0
+        let ready = false
+        let destroyed = false
+
+        const clamp = (value: number) => Math.min(Math.max(value, 0), 1)
+
+        const calculateScrollProgress = () => {
+            const rect = section.getBoundingClientRect()
+
+            const scrollDistance = section.offsetHeight - window.innerHeight
+
+            if (scrollDistance <= 0) {
+                targetProgress.current = 0
+                return
+            }
+
+            let progress = -rect.top / scrollDistance
+            progress = clamp(progress)
+
+            if (reverse) {
+                progress = 1 - progress
+            }
+
+            targetProgress.current = progress
+        }
+
+        const requestSeek = (requestedTime: number) => {
+            if (!ready || duration <= 0) return
+
+            const safeFrameRate = Math.max(frameRate, 1)
+            const frameDuration = 1 / safeFrameRate
+
+            // Bulatkan ke frame terdekat.
+            const frameTime =
+                Math.round(requestedTime / frameDuration) * frameDuration
+
+            const safeTime = Math.min(
+                Math.max(frameTime, 0.001),
+                Math.max(duration - 0.001, 0.001)
+            )
+
+            // Jangan seek jika perubahannya kurang dari satu frame.
+            if (
+                Math.abs(safeTime - lastRequestedTime.current) < frameDuration
+            ) {
+                return
+            }
+
+            /*
+             * Kalau browser masih melakukan seek,
+             * simpan permintaan terbaru saja.
+             */
+            if (seeking.current || videoElement.seeking) {
+                pendingTime.current = safeTime
+                return
+            }
+
+            seeking.current = true
+            lastRequestedTime.current = safeTime
+
+            try {
+                videoElement.currentTime = safeTime
+            } catch (error) {
+                seeking.current = false
+                console.warn("Video seek failed:", error)
+            }
+        }
+
+        const handleSeeked = () => {
+            seeking.current = false
+
+            /*
+             * Setelah seek selesai, jalankan hanya
+             * permintaan terbaru yang sempat tertunda.
+             */
+            if (pendingTime.current !== null) {
+                const nextTime = pendingTime.current
+                pendingTime.current = null
+                requestSeek(nextTime)
+            }
+        }
+
+        const animate = () => {
+            if (destroyed) return
+
+            const difference = targetProgress.current - smoothProgress.current
+
+            /*
+             * Smoothing 0 = langsung mengikuti scroll.
+             * Makin besar = makin lembut.
+             */
+            const easing =
+                smoothing <= 0 ? 1 : Math.max(0.08, 1 - smoothing / 100)
+
+            smoothProgress.current += difference * easing
+
+            if (Math.abs(difference) < 0.0005) {
+                smoothProgress.current = targetProgress.current
+            }
+
+            if (ready && duration > 0) {
+                const nextTime = smoothProgress.current * duration
+
+                requestSeek(nextTime)
+
+                if (showProgress) {
+                    setDisplayProgress(Math.round(smoothProgress.current * 100))
+                }
+            }
+
+            rafRef.current = requestAnimationFrame(animate)
+        }
+
+        const handleMetadata = () => {
+            duration = videoElement.duration
+
+            ready = Number.isFinite(duration) && duration > 0
+
+            if (!ready) return
+
+            videoElement.pause()
+            videoElement.muted = true
+
+            calculateScrollProgress()
+
+            smoothProgress.current = targetProgress.current
+
+            requestSeek(targetProgress.current * duration)
+        }
+
+        videoElement.pause()
+        videoElement.muted = true
+        videoElement.playsInline = true
+        videoElement.preload = "auto"
+
+        videoElement.addEventListener("loadedmetadata", handleMetadata)
+
+        videoElement.addEventListener("seeked", handleSeeked)
+
+        window.addEventListener("scroll", calculateScrollProgress, {
+            passive: true,
+        })
+
+        window.addEventListener("resize", calculateScrollProgress)
+
+        calculateScrollProgress()
+
+        rafRef.current = requestAnimationFrame(animate)
+
+        if (videoElement.readyState >= 1) {
+            handleMetadata()
+        }
+
+        return () => {
+            destroyed = true
+
+            videoElement.removeEventListener("loadedmetadata", handleMetadata)
+
+            videoElement.removeEventListener("seeked", handleSeeked)
+
+            window.removeEventListener("scroll", calculateScrollProgress)
+
+            window.removeEventListener("resize", calculateScrollProgress)
+
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current)
+            }
+        }
+    }, [video, smoothing, frameRate, reverse, showProgress, isCanvas])
+
+    return (
+        <div
+            ref={sectionRef}
+            style={{
+                ...style,
+                position: "relative",
+                width: "100%",
+                height: isCanvas ? "100%" : `${scrollHeight}vh`,
+                background,
+            }}
+        >
+            <div
+                style={{
+                    position: isCanvas ? "relative" : "sticky",
+                    top: 0,
+                    width: "100%",
+                    height: isCanvas ? "100%" : "100vh",
+                    overflow: "clip",
+                    background,
+                    transform: "translateZ(0)",
+                    backfaceVisibility: "hidden",
+                }}
+            >
+                {video ? (
+                    <video
+                        ref={videoRef}
+                        src={video}
+                        poster={poster}
+                        muted
+                        playsInline
+                        preload="auto"
+                        controls={false}
+                        disablePictureInPicture
+                        style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "block",
+                            objectFit: fit,
+                            pointerEvents: "none",
+                            transform: "translateZ(0)",
+                            backfaceVisibility: "hidden",
+                        }}
+                    />
+                ) : (
+                    <div
+                        style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "grid",
+                            placeItems: "center",
+                            color: "rgba(255,255,255,.55)",
+                            fontFamily: "Inter, sans-serif",
+                            fontSize: 14,
+                        }}
+                    >
+                        Select a video
+                    </div>
+                )}
+
+                {showProgress && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            right: 20,
+                            bottom: 20,
+                            padding: "8px 11px",
+                            borderRadius: 999,
+                            color: "#fff",
+                            background: "rgba(0,0,0,.55)",
+                            backdropFilter: "blur(10px)",
+                            fontFamily: "Inter, sans-serif",
+                            fontSize: 12,
+                            fontWeight: 600,
+                        }}
+                    >
+                        {displayProgress}%
+                    </div>
+                )}
+            </div>
+        </div>
+    )
+}
+
+ScrollScrubVideo.defaultProps = {
+    scrollHeight: 400,
+    fit: "cover",
+    smoothing: 35,
+    frameRate: 30,
+    background: "#050510",
+    reverse: false,
+    showProgress: true,
+}
+
+addPropertyControls(ScrollScrubVideo, {
+    video: {
+        type: ControlType.File,
+        title: "Video",
+        allowedFileTypes: ["mp4", "webm"],
+    },
+
+    poster: {
+        type: ControlType.File,
+        title: "Poster",
+        allowedFileTypes: ["jpg", "jpeg", "png", "webp", "avif"],
+    },
+
+    scrollHeight: {
+        type: ControlType.Number,
+        title: "Scroll",
+        min: 200,
+        max: 1000,
+        step: 50,
+        unit: "vh",
+        defaultValue: 400,
+    },
+
+    fit: {
+        type: ControlType.Enum,
+        title: "Fit",
+        options: ["cover", "contain"],
+        optionTitles: ["Cover", "Contain"],
+        defaultValue: "cover",
+    },
+
+    smoothing: {
+        type: ControlType.Number,
+        title: "Smoothing",
+        min: 0,
+        max: 80,
+        step: 1,
+        defaultValue: 35,
+    },
+
+    frameRate: {
+        type: ControlType.Number,
+        title: "FPS",
+        min: 12,
+        max: 60,
+        step: 1,
+        defaultValue: 30,
+    },
+
+    reverse: {
+        type: ControlType.Boolean,
+        title: "Reverse",
+        defaultValue: false,
+    },
+
+    showProgress: {
+        type: ControlType.Boolean,
+        title: "Progress",
+        defaultValue: true,
+    },
+
+    background: {
+        type: ControlType.Color,
+        title: "Background",
+        defaultValue: "#050510",
+    },
+})
