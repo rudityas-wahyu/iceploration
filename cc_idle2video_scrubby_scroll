@@ -1,0 +1,512 @@
+import * as React from "react"
+import { addPropertyControls, ControlType, RenderTarget } from "framer"
+
+/**
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any
+ */
+
+type FitMode = "cover" | "contain"
+
+interface Props {
+    idleVideo?: string
+    scrubVideo?: string
+    poster?: string
+
+    scrollHeight?: number
+    transitionEnd?: number
+    scrubStart?: number
+
+    smoothing?: number
+    fit?: FitMode
+
+    reverse?: boolean
+    background?: string
+
+    showProgress?: boolean
+    style?: React.CSSProperties
+}
+
+export default function IdleToScrubVideo(props: Props) {
+    const {
+        idleVideo,
+        scrubVideo,
+        poster,
+
+        scrollHeight = 500,
+        transitionEnd = 8,
+        scrubStart = 4,
+
+        smoothing = 20,
+        fit = "cover",
+
+        reverse = false,
+        background = "#050510",
+
+        showProgress = false,
+        style,
+    } = props
+
+    const sectionRef = React.useRef<HTMLDivElement>(null)
+    const idleRef = React.useRef<HTMLVideoElement>(null)
+    const scrubRef = React.useRef<HTMLVideoElement>(null)
+
+    const targetProgress = React.useRef(0)
+    const smoothProgress = React.useRef(0)
+
+    const targetTime = React.useRef(0)
+    const currentTime = React.useRef(0)
+
+    const rafRef = React.useRef<number | null>(null)
+
+    const [displayProgress, setDisplayProgress] = React.useState(0)
+
+    const [idleOpacity, setIdleOpacity] = React.useState(1)
+
+    const [scrubOpacity, setScrubOpacity] = React.useState(0)
+
+    const isCanvas = RenderTarget.current() === RenderTarget.canvas
+
+    React.useEffect(() => {
+        if (isCanvas) return
+
+        const section = sectionRef.current
+        const idle = idleRef.current
+        const scrub = scrubRef.current
+
+        if (!section || !scrub) return
+
+        let duration = 0
+        let ready = false
+        let destroyed = false
+
+        const clamp = (value: number, min = 0, max = 1) =>
+            Math.min(Math.max(value, min), max)
+
+        const calculateProgress = () => {
+            const rect = section.getBoundingClientRect()
+
+            const scrollDistance = section.offsetHeight - window.innerHeight
+
+            if (scrollDistance <= 0) {
+                targetProgress.current = 0
+                return
+            }
+
+            let progress = -rect.top / scrollDistance
+
+            progress = clamp(progress)
+
+            if (reverse) {
+                progress = 1 - progress
+            }
+
+            targetProgress.current = progress
+        }
+
+        const updateOpacity = (progress: number) => {
+            const transition = Math.max(transitionEnd, 0.1) / 100
+
+            let idleAlpha = 1
+            let scrubAlpha = 0
+
+            if (progress <= 0) {
+                idleAlpha = 1
+                scrubAlpha = 0
+            } else if (progress < transition) {
+                const local = progress / transition
+
+                idleAlpha = 1 - local
+                scrubAlpha = local
+            } else {
+                idleAlpha = 0
+                scrubAlpha = 1
+            }
+
+            setIdleOpacity(idleAlpha)
+            setScrubOpacity(scrubAlpha)
+
+            if (idle) {
+                if (idleAlpha > 0.01) {
+                    if (idle.paused) {
+                        idle.play().catch(() => {})
+                    }
+                } else {
+                    idle.pause()
+                }
+            }
+        }
+
+        const animate = () => {
+            if (destroyed) return
+
+            const target = targetProgress.current
+
+            const current = smoothProgress.current
+
+            const easing =
+                smoothing <= 0 ? 1 : Math.max(0.06, 1 - smoothing / 100)
+
+            const next = current + (target - current) * easing
+
+            smoothProgress.current =
+                Math.abs(target - next) < 0.0001 ? target : next
+
+            const progress = smoothProgress.current
+
+            updateOpacity(progress)
+
+            /*
+             * Scrub starts only after scrubStart %
+             * of the whole section.
+             */
+            const scrubStartProgress = Math.min(
+                Math.max(scrubStart / 100, 0),
+                0.99
+            )
+
+            let scrubProgress =
+                (progress - scrubStartProgress) / (1 - scrubStartProgress)
+
+            scrubProgress = clamp(scrubProgress)
+
+            if (ready && duration > 0 && Number.isFinite(duration)) {
+                targetTime.current = scrubProgress * duration
+
+                currentTime.current +=
+                    (targetTime.current - currentTime.current) * 0.25
+
+                if (Math.abs(scrub.currentTime - currentTime.current) > 0.02) {
+                    try {
+                        scrub.currentTime = currentTime.current
+                    } catch {}
+                }
+            }
+
+            if (showProgress) {
+                setDisplayProgress(Math.round(progress * 100))
+            }
+
+            rafRef.current = requestAnimationFrame(animate)
+        }
+
+        const handleMetadata = () => {
+            duration = scrub.duration
+
+            ready = Number.isFinite(duration) && duration > 0
+
+            if (!ready) return
+
+            scrub.pause()
+            scrub.muted = true
+            scrub.currentTime = 0.001
+
+            calculateProgress()
+
+            smoothProgress.current = targetProgress.current
+        }
+
+        if (idle) {
+            idle.muted = true
+            idle.loop = true
+            idle.playsInline = true
+
+            idle.play().catch(() => {})
+        }
+
+        scrub.muted = true
+        scrub.playsInline = true
+        scrub.preload = "auto"
+        scrub.pause()
+
+        scrub.addEventListener("loadedmetadata", handleMetadata)
+
+        window.addEventListener("scroll", calculateProgress, { passive: true })
+
+        window.addEventListener("resize", calculateProgress)
+
+        calculateProgress()
+
+        if (scrub.readyState >= 1) {
+            handleMetadata()
+        }
+
+        rafRef.current = requestAnimationFrame(animate)
+
+        return () => {
+            destroyed = true
+
+            scrub.removeEventListener("loadedmetadata", handleMetadata)
+
+            window.removeEventListener("scroll", calculateProgress)
+
+            window.removeEventListener("resize", calculateProgress)
+
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current)
+            }
+        }
+    }, [
+        idleVideo,
+        scrubVideo,
+        scrollHeight,
+        transitionEnd,
+        scrubStart,
+        smoothing,
+        reverse,
+        showProgress,
+        isCanvas,
+    ])
+
+    return (
+        <div
+            ref={sectionRef}
+            style={{
+                ...style,
+                position: "relative",
+                width: "100%",
+                height: isCanvas ? "100%" : `${scrollHeight}vh`,
+                background,
+            }}
+        >
+            <div
+                style={{
+                    position: isCanvas ? "relative" : "sticky",
+
+                    top: 0,
+
+                    width: "100%",
+
+                    height: isCanvas ? "100%" : "100vh",
+
+                    overflow: "clip",
+
+                    background,
+
+                    transform: "translate3d(0,0,0)",
+
+                    backfaceVisibility: "hidden",
+                }}
+            >
+                {idleVideo && (
+                    <video
+                        ref={idleRef}
+                        src={idleVideo}
+                        poster={poster}
+                        muted
+                        loop
+                        autoPlay
+                        playsInline
+                        preload="auto"
+                        controls={false}
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+
+                            width: "100%",
+                            height: "100%",
+
+                            objectFit: fit,
+
+                            opacity: idleOpacity,
+
+                            pointerEvents: "none",
+
+                            transform: "translate3d(0,0,0)",
+
+                            backfaceVisibility: "hidden",
+
+                            willChange: "opacity",
+                        }}
+                    />
+                )}
+
+                {scrubVideo && (
+                    <video
+                        ref={scrubRef}
+                        src={scrubVideo}
+                        poster={poster}
+                        muted
+                        playsInline
+                        preload="auto"
+                        controls={false}
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+
+                            width: "100%",
+                            height: "100%",
+
+                            objectFit: fit,
+
+                            opacity: scrubOpacity,
+
+                            pointerEvents: "none",
+
+                            transform: "translate3d(0,0,0)",
+
+                            backfaceVisibility: "hidden",
+
+                            willChange: "opacity",
+                        }}
+                    />
+                )}
+
+                {!idleVideo && !scrubVideo && (
+                    <div
+                        style={{
+                            width: "100%",
+                            height: "100%",
+
+                            display: "grid",
+                            placeItems: "center",
+
+                            color: "rgba(255,255,255,.55)",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 14,
+                        }}
+                    >
+                        Add Idle and Scrub videos
+                    </div>
+                )}
+
+                {showProgress && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            right: 20,
+                            bottom: 20,
+
+                            padding: "8px 12px",
+
+                            borderRadius: 999,
+
+                            background: "rgba(0,0,0,.55)",
+
+                            color: "#fff",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 12,
+                            fontWeight: 600,
+
+                            backdropFilter: "blur(12px)",
+
+                            pointerEvents: "none",
+                        }}
+                    >
+                        {displayProgress}%
+                    </div>
+                )}
+            </div>
+        </div>
+    )
+}
+
+addPropertyControls(IdleToScrubVideo, {
+    idleVideo: {
+        type: ControlType.File,
+        title: "Idle Video",
+        allowedFileTypes: ["mp4", "webm"],
+    },
+
+    scrubVideo: {
+        type: ControlType.File,
+        title: "Scrub Video",
+        allowedFileTypes: ["mp4", "webm"],
+    },
+
+    poster: {
+        type: ControlType.File,
+        title: "Poster",
+        allowedFileTypes: ["jpg", "jpeg", "png", "webp"],
+    },
+
+    scrollHeight: {
+        type: ControlType.Number,
+        title: "Scroll",
+
+        min: 200,
+        max: 1500,
+        step: 50,
+
+        unit: "vh",
+
+        defaultValue: 500,
+    },
+
+    transitionEnd: {
+        type: ControlType.Number,
+        title: "Fade End",
+
+        min: 1,
+        max: 30,
+        step: 1,
+
+        unit: "%",
+
+        defaultValue: 8,
+    },
+
+    scrubStart: {
+        type: ControlType.Number,
+        title: "Scrub Start",
+
+        min: 0,
+        max: 40,
+        step: 1,
+
+        unit: "%",
+
+        defaultValue: 4,
+    },
+
+    smoothing: {
+        type: ControlType.Number,
+        title: "Smooth",
+
+        min: 0,
+        max: 70,
+        step: 1,
+
+        defaultValue: 20,
+    },
+
+    fit: {
+        type: ControlType.Enum,
+        title: "Fit",
+
+        options: ["cover", "contain"],
+
+        optionTitles: ["Cover", "Contain"],
+
+        defaultValue: "cover",
+    },
+
+    reverse: {
+        type: ControlType.Boolean,
+        title: "Reverse",
+
+        defaultValue: false,
+
+        enabledTitle: "Yes",
+        disabledTitle: "No",
+    },
+
+    showProgress: {
+        type: ControlType.Boolean,
+        title: "Progress",
+
+        defaultValue: false,
+    },
+
+    background: {
+        type: ControlType.Color,
+        title: "Background",
+
+        defaultValue: "#050510",
+    },
+})
