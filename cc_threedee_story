@@ -1,0 +1,1597 @@
+import * as React from "react"
+import { addPropertyControls, ControlType, RenderTarget } from "framer"
+
+import * as THREE from "three"
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
+
+/**
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any
+ */
+
+type MouseMode = "off" | "object" | "camera" | "both"
+
+type IdleAnimationMode = "off" | "first"
+
+interface StoryKeyframe {
+    progress?: number
+
+    // Screen placement
+    screenX?: number
+    screenY?: number
+
+    // Camera
+    cameraX?: number
+    cameraY?: number
+    cameraZ?: number
+
+    targetX?: number
+    targetY?: number
+    targetZ?: number
+
+    fov?: number
+
+    // Object
+    rotationX?: number
+    rotationY?: number
+    rotationZ?: number
+    scale?: number
+
+    // Mouse influence
+    mouseInfluence?: number
+}
+
+interface Props {
+    modelUrl?: string
+
+    keyframes?: StoryKeyframe[]
+
+    scrollHeight?: number
+    smoothing?: number
+    previewProgress?: number
+
+    autoCenter?: boolean
+    autoFit?: boolean
+
+    baseScale?: number
+
+    offsetX?: number
+    offsetY?: number
+    offsetZ?: number
+
+    ambientIntensity?: number
+    directionalIntensity?: number
+
+    idleAnimation?: IdleAnimationMode
+    animationSpeed?: number
+
+    mouseMode?: MouseMode
+    mouseRotateX?: number
+    mouseRotateY?: number
+    mouseCameraX?: number
+    mouseCameraY?: number
+    mouseSmooth?: number
+
+    transparent?: boolean
+    showDebug?: boolean
+
+    style?: React.CSSProperties
+}
+
+type NormalizedKeyframe = Required<StoryKeyframe>
+
+/* -------------------------------------------------------
+   HELPERS
+------------------------------------------------------- */
+
+const clamp = (value: number, min = 0, max = 1) =>
+    Math.min(Math.max(value, min), max)
+
+const lerp = (from: number, to: number, progress: number) =>
+    from + (to - from) * progress
+
+const degToRad = (value: number) => THREE.MathUtils.degToRad(value)
+
+function normalizeKeyframe(
+    keyframe: StoryKeyframe,
+    fallbackProgress: number
+): NormalizedKeyframe {
+    return {
+        progress: keyframe.progress ?? fallbackProgress,
+
+        screenX: keyframe.screenX ?? 50,
+
+        screenY: keyframe.screenY ?? 50,
+
+        cameraX: keyframe.cameraX ?? 0,
+
+        cameraY: keyframe.cameraY ?? 0,
+
+        cameraZ: keyframe.cameraZ ?? 5,
+
+        targetX: keyframe.targetX ?? 0,
+
+        targetY: keyframe.targetY ?? 0,
+
+        targetZ: keyframe.targetZ ?? 0,
+
+        fov: keyframe.fov ?? 45,
+
+        rotationX: keyframe.rotationX ?? 0,
+
+        rotationY: keyframe.rotationY ?? 0,
+
+        rotationZ: keyframe.rotationZ ?? 0,
+
+        scale: keyframe.scale ?? 1,
+
+        mouseInfluence: keyframe.mouseInfluence ?? 0,
+    }
+}
+
+function interpolateKeyframes(
+    keyframes: NormalizedKeyframe[],
+    progress: number
+): NormalizedKeyframe {
+    if (keyframes.length === 0) {
+        return normalizeKeyframe({}, 0)
+    }
+
+    if (keyframes.length === 1) {
+        return keyframes[0]
+    }
+
+    const p = clamp(progress)
+
+    if (p <= keyframes[0].progress) {
+        return keyframes[0]
+    }
+
+    const last = keyframes[keyframes.length - 1]
+
+    if (p >= last.progress) {
+        return last
+    }
+
+    let from = keyframes[0]
+    let to = keyframes[1]
+
+    for (let i = 0; i < keyframes.length - 1; i++) {
+        const current = keyframes[i]
+
+        const next = keyframes[i + 1]
+
+        if (p >= current.progress && p <= next.progress) {
+            from = current
+            to = next
+            break
+        }
+    }
+
+    const range = to.progress - from.progress
+
+    const local = range <= 0 ? 0 : clamp((p - from.progress) / range)
+
+    const mix = (a: number, b: number) => lerp(a, b, local)
+
+    return {
+        progress: p,
+
+        screenX: mix(from.screenX, to.screenX),
+
+        screenY: mix(from.screenY, to.screenY),
+
+        cameraX: mix(from.cameraX, to.cameraX),
+
+        cameraY: mix(from.cameraY, to.cameraY),
+
+        cameraZ: mix(from.cameraZ, to.cameraZ),
+
+        targetX: mix(from.targetX, to.targetX),
+
+        targetY: mix(from.targetY, to.targetY),
+
+        targetZ: mix(from.targetZ, to.targetZ),
+
+        fov: mix(from.fov, to.fov),
+
+        rotationX: mix(from.rotationX, to.rotationX),
+
+        rotationY: mix(from.rotationY, to.rotationY),
+
+        rotationZ: mix(from.rotationZ, to.rotationZ),
+
+        scale: mix(from.scale, to.scale),
+
+        mouseInfluence: mix(from.mouseInfluence, to.mouseInfluence),
+    }
+}
+
+/* -------------------------------------------------------
+   COMPONENT
+------------------------------------------------------- */
+
+export default function ThreeDStoryDirector(props: Props) {
+    const {
+        modelUrl,
+        keyframes = [],
+
+        scrollHeight = 900,
+        smoothing = 6,
+        previewProgress = 0,
+
+        autoCenter = true,
+        autoFit = true,
+
+        baseScale = 1,
+
+        offsetX = 0,
+        offsetY = 0,
+        offsetZ = 0,
+
+        ambientIntensity = 0.6,
+        directionalIntensity = 2,
+
+        idleAnimation = "off",
+        animationSpeed = 1,
+
+        mouseMode = "off",
+        mouseRotateX = 6,
+        mouseRotateY = 10,
+        mouseCameraX = 0.35,
+        mouseCameraY = 0.2,
+        mouseSmooth = 10,
+
+        transparent = true,
+        showDebug = true,
+
+        style,
+    } = props
+
+    const sectionRef = React.useRef<HTMLDivElement>(null)
+
+    const visualRef = React.useRef<HTMLDivElement>(null)
+
+    const canvasHostRef = React.useRef<HTMLDivElement>(null)
+
+    const targetProgress = React.useRef(0)
+
+    const smoothProgress = React.useRef(0)
+
+    const currentProgress = React.useRef(0)
+
+    const rafRef = React.useRef<number | null>(null)
+
+    const clockRef = React.useRef(new THREE.Clock())
+
+    const mouseTarget = React.useRef({
+        x: 0,
+        y: 0,
+    })
+
+    const mouseCurrent = React.useRef({
+        x: 0,
+        y: 0,
+    })
+
+    const threeRef = React.useRef<{
+        renderer: THREE.WebGLRenderer
+
+        scene: THREE.Scene
+
+        camera: THREE.PerspectiveCamera
+
+        model: THREE.Object3D | null
+
+        modelRoot: THREE.Group
+
+        contentRoot: THREE.Group
+
+        mixer: THREE.AnimationMixer | null
+
+        animationAction: THREE.AnimationAction | null
+
+        resizeObserver: ResizeObserver
+    } | null>(null)
+
+    const [modelLoaded, setModelLoaded] = React.useState(false)
+
+    const [error, setError] = React.useState("")
+
+    const [debugProgress, setDebugProgress] = React.useState(0)
+
+    const isCanvas = RenderTarget.current() === RenderTarget.canvas
+
+    /* ---------------------------------------------------
+       NORMALIZE USER KEYFRAMES
+    --------------------------------------------------- */
+
+    const normalizedKeyframes = React.useMemo(() => {
+        if (keyframes.length === 0) {
+            return [
+                normalizeKeyframe(
+                    {
+                        progress: 0,
+                        screenX: 50,
+                        screenY: 50,
+
+                        cameraX: 0,
+                        cameraY: 0,
+                        cameraZ: 5,
+
+                        targetX: 0,
+                        targetY: 0,
+                        targetZ: 0,
+
+                        fov: 45,
+
+                        rotationX: 0,
+                        rotationY: 0,
+                        rotationZ: 0,
+
+                        scale: 1,
+
+                        mouseInfluence: 0,
+                    },
+                    0
+                ),
+            ]
+        }
+
+        return keyframes
+            .map((keyframe, index) => {
+                const fallback =
+                    keyframes.length === 1 ? 0 : index / (keyframes.length - 1)
+
+                return normalizeKeyframe(keyframe, fallback)
+            })
+            .sort((a, b) => a.progress - b.progress)
+    }, [keyframes])
+
+    /* ---------------------------------------------------
+       SETUP THREE.JS
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        const host = canvasHostRef.current
+
+        if (!host) return
+
+        setError("")
+        setModelLoaded(false)
+
+        const scene = new THREE.Scene()
+
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            powerPreference: "high-performance",
+        })
+
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+
+        renderer.outputColorSpace = THREE.SRGBColorSpace
+
+        renderer.setClearColor(0x000000, transparent ? 0 : 1)
+
+        const canvas = renderer.domElement
+
+        canvas.style.width = "100%"
+
+        canvas.style.height = "100%"
+
+        canvas.style.display = "block"
+
+        canvas.style.background = "transparent"
+
+        canvas.style.pointerEvents = "none"
+
+        host.appendChild(canvas)
+
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000)
+
+        camera.position.set(0, 0, 5)
+
+        const modelRoot = new THREE.Group()
+
+        const contentRoot = new THREE.Group()
+
+        modelRoot.add(contentRoot)
+
+        scene.add(modelRoot)
+
+        /* Lighting */
+
+        const ambient = new THREE.AmbientLight(0xffffff, ambientIntensity)
+
+        scene.add(ambient)
+
+        const keyLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity
+        )
+
+        keyLight.position.set(4, 5, 6)
+
+        scene.add(keyLight)
+
+        const fillLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity * 0.45
+        )
+
+        fillLight.position.set(-4, 2, 3)
+
+        scene.add(fillLight)
+
+        const rimLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity * 0.3
+        )
+
+        rimLight.position.set(0, 4, -5)
+
+        scene.add(rimLight)
+
+        /* Resize */
+
+        const resize = () => {
+            const width = host.clientWidth
+
+            const height = host.clientHeight
+
+            if (width <= 0 || height <= 0) {
+                return
+            }
+
+            renderer.setSize(width, height, false)
+
+            camera.aspect = width / height
+
+            camera.updateProjectionMatrix()
+
+            renderer.render(scene, camera)
+        }
+
+        const resizeObserver = new ResizeObserver(resize)
+
+        resizeObserver.observe(host)
+
+        resize()
+
+        threeRef.current = {
+            renderer,
+            scene,
+            camera,
+
+            model: null,
+
+            modelRoot,
+            contentRoot,
+
+            mixer: null,
+            animationAction: null,
+
+            resizeObserver,
+        }
+
+        /* --------------------------------------------
+           LOAD GLB / GLTF
+        -------------------------------------------- */
+
+        if (modelUrl) {
+            const loader = new GLTFLoader()
+
+            loader.load(
+                modelUrl,
+
+                (gltf) => {
+                    const three = threeRef.current
+
+                    if (!three) return
+
+                    const model = gltf.scene
+
+                    contentRoot.clear()
+
+                    model.position.set(0, 0, 0)
+
+                    model.rotation.set(0, 0, 0)
+
+                    model.scale.set(1, 1, 1)
+
+                    contentRoot.position.set(0, 0, 0)
+
+                    contentRoot.scale.set(1, 1, 1)
+
+                    contentRoot.add(model)
+
+                    three.model = model
+
+                    /* Auto fit */
+
+                    model.updateMatrixWorld(true)
+
+                    const box = new THREE.Box3().setFromObject(model)
+
+                    const size = new THREE.Vector3()
+
+                    box.getSize(size)
+
+                    let fitScale = 1
+
+                    if (autoFit) {
+                        const maxDimension = Math.max(size.x, size.y, size.z)
+
+                        if (maxDimension > 0) {
+                            fitScale = 3 / maxDimension
+                        }
+                    }
+
+                    contentRoot.scale.setScalar(fitScale * baseScale)
+
+                    contentRoot.updateMatrixWorld(true)
+
+                    /* Auto center */
+
+                    const fittedBox = new THREE.Box3().setFromObject(
+                        contentRoot
+                    )
+
+                    const center = new THREE.Vector3()
+
+                    fittedBox.getCenter(center)
+
+                    if (autoCenter) {
+                        contentRoot.position.set(
+                            -center.x,
+                            -center.y,
+                            -center.z
+                        )
+                    }
+
+                    contentRoot.position.x += offsetX
+
+                    contentRoot.position.y += offsetY
+
+                    contentRoot.position.z += offsetZ
+
+                    /* Idle animation */
+
+                    if (
+                        gltf.animations.length > 0 &&
+                        idleAnimation === "first"
+                    ) {
+                        const mixer = new THREE.AnimationMixer(model)
+
+                        const clip = gltf.animations[0]
+
+                        const action = mixer.clipAction(clip)
+
+                        action.setLoop(THREE.LoopRepeat, Infinity)
+
+                        action.play()
+
+                        three.mixer = mixer
+
+                        three.animationAction = action
+                    }
+
+                    setModelLoaded(true)
+
+                    renderer.render(scene, camera)
+                },
+
+                undefined,
+
+                (loadError) => {
+                    console.error(loadError)
+
+                    setError("Could not load 3D model.")
+                }
+            )
+        }
+
+        return () => {
+            resizeObserver.disconnect()
+
+            const current = threeRef.current
+
+            current?.animationAction?.stop()
+            current?.mixer?.stopAllAction()
+
+            threeRef.current = null
+
+            renderer.dispose()
+
+            if (canvas.parentElement === host) {
+                host.removeChild(canvas)
+            }
+
+            scene.traverse((object) => {
+                const mesh = object as THREE.Mesh
+
+                mesh.geometry?.dispose()
+
+                const material = mesh.material as
+                    | THREE.Material
+                    | THREE.Material[]
+                    | undefined
+
+                if (Array.isArray(material)) {
+                    material.forEach((item) => item.dispose())
+                } else {
+                    material?.dispose()
+                }
+            })
+        }
+    }, [
+        modelUrl,
+
+        autoCenter,
+        autoFit,
+
+        baseScale,
+
+        offsetX,
+        offsetY,
+        offsetZ,
+
+        ambientIntensity,
+        directionalIntensity,
+
+        transparent,
+
+        idleAnimation,
+    ])
+
+    /* ---------------------------------------------------
+       SCROLL
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        if (isCanvas) return
+
+        const section = sectionRef.current
+
+        if (!section) return
+
+        const updateScroll = () => {
+            const rect = section.getBoundingClientRect()
+
+            const distance = section.offsetHeight - window.innerHeight
+
+            if (distance <= 0) {
+                targetProgress.current = 0
+
+                return
+            }
+
+            targetProgress.current = clamp(-rect.top / distance)
+        }
+
+        updateScroll()
+
+        smoothProgress.current = targetProgress.current
+
+        currentProgress.current = targetProgress.current
+
+        window.addEventListener("scroll", updateScroll, {
+            passive: true,
+        })
+
+        window.addEventListener("resize", updateScroll)
+
+        return () => {
+            window.removeEventListener("scroll", updateScroll)
+
+            window.removeEventListener("resize", updateScroll)
+        }
+    }, [isCanvas])
+
+    /* ---------------------------------------------------
+       POINTER / MOUSE
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        if (isCanvas || mouseMode === "off") {
+            mouseTarget.current = {
+                x: 0,
+                y: 0,
+            }
+
+            return
+        }
+
+        const handlePointerMove = (event: PointerEvent) => {
+            const x = (event.clientX / window.innerWidth) * 2 - 1
+
+            const y = -((event.clientY / window.innerHeight) * 2 - 1)
+
+            mouseTarget.current = {
+                x: clamp(x, -1, 1),
+
+                y: clamp(y, -1, 1),
+            }
+        }
+
+        const resetPointer = () => {
+            mouseTarget.current = {
+                x: 0,
+                y: 0,
+            }
+        }
+
+        window.addEventListener("pointermove", handlePointerMove, {
+            passive: true,
+        })
+
+        window.addEventListener("blur", resetPointer)
+
+        return () => {
+            window.removeEventListener("pointermove", handlePointerMove)
+
+            window.removeEventListener("blur", resetPointer)
+        }
+    }, [isCanvas, mouseMode])
+
+    /* ---------------------------------------------------
+       MAIN RENDER LOOP
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        let destroyed = false
+
+        clockRef.current.start()
+
+        const loop = () => {
+            if (destroyed) return
+
+            const three = threeRef.current
+
+            if (three) {
+                /* -------------------------
+                   Progress
+                ------------------------- */
+
+                let progress: number
+
+                if (isCanvas) {
+                    progress = clamp(previewProgress / 100)
+                } else {
+                    const target = targetProgress.current
+
+                    const current = smoothProgress.current
+
+                    const easing =
+                        smoothing <= 0 ? 1 : Math.max(0.08, 1 - smoothing / 100)
+
+                    let next = current + (target - current) * easing
+
+                    if (Math.abs(target - next) < 0.0001) {
+                        next = target
+                    }
+
+                    smoothProgress.current = next
+
+                    progress = next
+                }
+
+                currentProgress.current = progress
+
+                const state = interpolateKeyframes(
+                    normalizedKeyframes,
+                    progress
+                )
+
+                /* -------------------------
+                   Mouse smoothing
+                ------------------------- */
+
+                const mouseEase = Math.max(0.02, Math.min(mouseSmooth / 100, 1))
+
+                mouseCurrent.current.x +=
+                    (mouseTarget.current.x - mouseCurrent.current.x) * mouseEase
+
+                mouseCurrent.current.y +=
+                    (mouseTarget.current.y - mouseCurrent.current.y) * mouseEase
+
+                const mouseX = mouseCurrent.current.x
+
+                const mouseY = mouseCurrent.current.y
+
+                const influence = state.mouseInfluence
+
+                /* -------------------------
+                   Camera base
+                ------------------------- */
+
+                let cameraX = state.cameraX
+
+                let cameraY = state.cameraY
+
+                let cameraZ = state.cameraZ
+
+                /* Camera mouse */
+
+                if (mouseMode === "camera" || mouseMode === "both") {
+                    cameraX += mouseX * mouseCameraX * influence
+
+                    cameraY += mouseY * mouseCameraY * influence
+                }
+
+                three.camera.position.set(cameraX, cameraY, cameraZ)
+
+                three.camera.fov = state.fov
+
+                three.camera.updateProjectionMatrix()
+
+                three.camera.lookAt(state.targetX, state.targetY, state.targetZ)
+
+                /* -------------------------
+                   Object rotation
+                ------------------------- */
+
+                let rotationX = state.rotationX
+
+                let rotationY = state.rotationY
+
+                if (mouseMode === "object" || mouseMode === "both") {
+                    rotationY += mouseX * mouseRotateY * influence
+
+                    rotationX -= mouseY * mouseRotateX * influence
+                }
+
+                three.modelRoot.rotation.set(
+                    degToRad(rotationX),
+                    degToRad(rotationY),
+                    degToRad(state.rotationZ)
+                )
+
+                three.modelRoot.scale.setScalar(state.scale)
+
+                /* -------------------------
+                   Screen position
+                   = position of WebGL layer
+                ------------------------- */
+
+                if (visualRef.current) {
+                    visualRef.current.style.left = `${state.screenX}%`
+
+                    visualRef.current.style.top = `${state.screenY}%`
+
+                    visualRef.current.style.transform = "translate(-50%, -50%)"
+                }
+
+                /* -------------------------
+                   Idle GLB animation
+                ------------------------- */
+
+                if (three.mixer && idleAnimation === "first") {
+                    const delta = clockRef.current.getDelta()
+
+                    three.mixer.update(delta * animationSpeed)
+                } else {
+                    clockRef.current.getDelta()
+                }
+
+                three.renderer.render(three.scene, three.camera)
+
+                if (showDebug) {
+                    setDebugProgress(Math.round(progress * 100))
+                }
+            }
+
+            rafRef.current = requestAnimationFrame(loop)
+        }
+
+        rafRef.current = requestAnimationFrame(loop)
+
+        return () => {
+            destroyed = true
+
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current)
+            }
+        }
+    }, [
+        normalizedKeyframes,
+
+        previewProgress,
+        isCanvas,
+
+        smoothing,
+
+        idleAnimation,
+        animationSpeed,
+
+        mouseMode,
+
+        mouseRotateX,
+        mouseRotateY,
+
+        mouseCameraX,
+        mouseCameraY,
+
+        mouseSmooth,
+
+        showDebug,
+    ])
+
+    /* ---------------------------------------------------
+       UI
+    --------------------------------------------------- */
+
+    return (
+        <div
+            ref={sectionRef}
+            style={{
+                ...style,
+
+                position: "relative",
+
+                width: "100%",
+
+                height: isCanvas ? "100%" : `${scrollHeight}vh`,
+
+                background: "transparent",
+
+                pointerEvents: "none",
+            }}
+        >
+            {/*
+                Full viewport sticky
+                canvas container.
+            */}
+
+            <div
+                style={{
+                    position: isCanvas ? "relative" : "sticky",
+
+                    top: 0,
+
+                    width: "100%",
+
+                    height: isCanvas ? "100%" : "100vh",
+
+                    overflow: "visible",
+
+                    background: "transparent",
+
+                    pointerEvents: "none",
+                }}
+            >
+                {/*
+                    This layer moves around
+                    the viewport using
+                    screenX/screenY.
+                */}
+
+                <div
+                    ref={visualRef}
+                    style={{
+                        position: "absolute",
+
+                        left: "50%",
+                        top: "50%",
+
+                        transform: "translate(-50%, -50%)",
+
+                        width: "100%",
+
+                        height: "100%",
+
+                        pointerEvents: "none",
+
+                        willChange: "left, top, transform",
+                    }}
+                >
+                    <div
+                        ref={canvasHostRef}
+                        style={{
+                            position: "absolute",
+
+                            inset: 0,
+
+                            width: "100%",
+
+                            height: "100%",
+
+                            background: "transparent",
+
+                            pointerEvents: "none",
+                        }}
+                    />
+                </div>
+
+                {!modelUrl && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            inset: 0,
+
+                            display: "grid",
+
+                            placeItems: "center",
+
+                            color: "rgba(0,0,0,.45)",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 13,
+                        }}
+                    >
+                        Add GLB / glTF URL
+                    </div>
+                )}
+
+                {modelUrl && !modelLoaded && !error && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            inset: 0,
+
+                            display: "grid",
+
+                            placeItems: "center",
+
+                            color: "rgba(0,0,0,.45)",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 12,
+                        }}
+                    >
+                        Loading 3D…
+                    </div>
+                )}
+
+                {error && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            left: 20,
+                            bottom: 20,
+
+                            padding: "8px 10px",
+
+                            borderRadius: 8,
+
+                            background: "rgba(0,0,0,.7)",
+
+                            color: "#fff",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 12,
+                        }}
+                    >
+                        {error}
+                    </div>
+                )}
+
+                {showDebug && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            right: 20,
+                            bottom: 20,
+
+                            padding: "7px 10px",
+
+                            borderRadius: 999,
+
+                            background: "rgba(0,0,0,.65)",
+
+                            color: "#fff",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 11,
+
+                            pointerEvents: "none",
+                        }}
+                    >
+                        {debugProgress}%
+                    </div>
+                )}
+            </div>
+        </div>
+    )
+}
+
+/* -------------------------------------------------------
+   PROPERTY CONTROLS
+------------------------------------------------------- */
+
+addPropertyControls(ThreeDStoryDirector, {
+    modelUrl: {
+        type: ControlType.String,
+
+        title: "Model URL",
+
+        placeholder: "https://.../model.glb",
+    },
+
+    previewProgress: {
+        type: ControlType.Number,
+
+        title: "Preview",
+
+        min: 0,
+        max: 100,
+
+        step: 1,
+
+        unit: "%",
+
+        defaultValue: 0,
+    },
+
+    keyframes: {
+        type: ControlType.Array,
+
+        title: "Keyframes",
+
+        maxCount: 16,
+
+        control: {
+            type: ControlType.Object,
+
+            controls: {
+                progress: {
+                    type: ControlType.Number,
+
+                    title: "Progress",
+
+                    min: 0,
+                    max: 1,
+
+                    step: 0.01,
+
+                    defaultValue: 0,
+                },
+
+                screenX: {
+                    type: ControlType.Number,
+
+                    title: "Screen X",
+
+                    min: -50,
+                    max: 150,
+
+                    step: 1,
+
+                    unit: "%",
+
+                    defaultValue: 50,
+                },
+
+                screenY: {
+                    type: ControlType.Number,
+
+                    title: "Screen Y",
+
+                    min: -50,
+                    max: 150,
+
+                    step: 1,
+
+                    unit: "%",
+
+                    defaultValue: 50,
+                },
+
+                cameraX: {
+                    type: ControlType.Number,
+
+                    title: "Camera X",
+
+                    min: -20,
+                    max: 20,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                cameraY: {
+                    type: ControlType.Number,
+
+                    title: "Camera Y",
+
+                    min: -20,
+                    max: 20,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                cameraZ: {
+                    type: ControlType.Number,
+
+                    title: "Camera Z",
+
+                    min: -20,
+                    max: 30,
+
+                    step: 0.1,
+
+                    defaultValue: 5,
+                },
+
+                targetX: {
+                    type: ControlType.Number,
+
+                    title: "Target X",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                targetY: {
+                    type: ControlType.Number,
+
+                    title: "Target Y",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                targetZ: {
+                    type: ControlType.Number,
+
+                    title: "Target Z",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                fov: {
+                    type: ControlType.Number,
+
+                    title: "FOV",
+
+                    min: 10,
+                    max: 100,
+
+                    step: 1,
+
+                    defaultValue: 45,
+                },
+
+                rotationX: {
+                    type: ControlType.Number,
+
+                    title: "Rotate X",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                rotationY: {
+                    type: ControlType.Number,
+
+                    title: "Rotate Y",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                rotationZ: {
+                    type: ControlType.Number,
+
+                    title: "Rotate Z",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                scale: {
+                    type: ControlType.Number,
+
+                    title: "Scale",
+
+                    min: 0.1,
+                    max: 10,
+
+                    step: 0.05,
+
+                    defaultValue: 1,
+                },
+
+                mouseInfluence: {
+                    type: ControlType.Number,
+
+                    title: "Mouse",
+
+                    min: 0,
+                    max: 1,
+
+                    step: 0.05,
+
+                    defaultValue: 0,
+                },
+            },
+        },
+    },
+
+    scrollHeight: {
+        type: ControlType.Number,
+
+        title: "Story",
+
+        min: 150,
+        max: 3000,
+
+        step: 50,
+
+        unit: "vh",
+
+        defaultValue: 900,
+    },
+
+    smoothing: {
+        type: ControlType.Number,
+
+        title: "Scroll Smooth",
+
+        min: 0,
+        max: 40,
+
+        step: 1,
+
+        defaultValue: 6,
+    },
+
+    autoCenter: {
+        type: ControlType.Boolean,
+
+        title: "Center",
+
+        defaultValue: true,
+    },
+
+    autoFit: {
+        type: ControlType.Boolean,
+
+        title: "Auto Fit",
+
+        defaultValue: true,
+    },
+
+    baseScale: {
+        type: ControlType.Number,
+
+        title: "Base Scale",
+
+        min: 0.1,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 1,
+    },
+
+    offsetX: {
+        type: ControlType.Number,
+
+        title: "Offset X",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    offsetY: {
+        type: ControlType.Number,
+
+        title: "Offset Y",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    offsetZ: {
+        type: ControlType.Number,
+
+        title: "Offset Z",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    idleAnimation: {
+        type: ControlType.Enum,
+
+        title: "Idle Anim",
+
+        options: ["off", "first"],
+
+        optionTitles: ["Off", "First Clip"],
+
+        defaultValue: "off",
+    },
+
+    animationSpeed: {
+        type: ControlType.Number,
+
+        title: "Anim Speed",
+
+        min: 0,
+        max: 4,
+
+        step: 0.1,
+
+        defaultValue: 1,
+    },
+
+    mouseMode: {
+        type: ControlType.Enum,
+
+        title: "Mouse",
+
+        options: ["off", "object", "camera", "both"],
+
+        optionTitles: ["Off", "Object", "Camera", "Both"],
+
+        defaultValue: "off",
+    },
+
+    mouseRotateX: {
+        type: ControlType.Number,
+
+        title: "Mouse Rot X",
+
+        min: 0,
+        max: 45,
+
+        step: 1,
+
+        unit: "°",
+
+        defaultValue: 6,
+    },
+
+    mouseRotateY: {
+        type: ControlType.Number,
+
+        title: "Mouse Rot Y",
+
+        min: 0,
+        max: 45,
+
+        step: 1,
+
+        unit: "°",
+
+        defaultValue: 10,
+    },
+
+    mouseCameraX: {
+        type: ControlType.Number,
+
+        title: "Mouse Cam X",
+
+        min: 0,
+        max: 3,
+
+        step: 0.05,
+
+        defaultValue: 0.35,
+    },
+
+    mouseCameraY: {
+        type: ControlType.Number,
+
+        title: "Mouse Cam Y",
+
+        min: 0,
+        max: 3,
+
+        step: 0.05,
+
+        defaultValue: 0.2,
+    },
+
+    mouseSmooth: {
+        type: ControlType.Number,
+
+        title: "Mouse Smooth",
+
+        min: 1,
+        max: 50,
+
+        step: 1,
+
+        defaultValue: 10,
+    },
+
+    ambientIntensity: {
+        type: ControlType.Number,
+
+        title: "Ambient",
+
+        min: 0,
+        max: 10,
+
+        step: 0.1,
+
+        defaultValue: 0.6,
+    },
+
+    directionalIntensity: {
+        type: ControlType.Number,
+
+        title: "Key Light",
+
+        min: 0,
+        max: 10,
+
+        step: 0.1,
+
+        defaultValue: 2,
+    },
+
+    transparent: {
+        type: ControlType.Boolean,
+
+        title: "Transparent",
+
+        defaultValue: true,
+    },
+
+    showDebug: {
+        type: ControlType.Boolean,
+
+        title: "Debug",
+
+        defaultValue: true,
+    },
+})
