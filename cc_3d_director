@@ -1,0 +1,1329 @@
+import * as React from "react"
+import { addPropertyControls, ControlType, RenderTarget } from "framer"
+
+import * as THREE from "three"
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
+
+/**
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any
+ */
+
+interface CameraKeyframe {
+    progress?: number
+
+    cameraX?: number
+    cameraY?: number
+    cameraZ?: number
+
+    targetX?: number
+    targetY?: number
+    targetZ?: number
+
+    fov?: number
+
+    rotationX?: number
+    rotationY?: number
+    rotationZ?: number
+
+    scale?: number
+}
+
+interface Props {
+    modelUrl?: string
+    keyframes?: CameraKeyframe[]
+
+    scrollHeight?: number
+    smoothing?: number
+
+    previewProgress?: number
+
+    autoCenter?: boolean
+    autoFit?: boolean
+
+    baseScale?: number
+
+    offsetX?: number
+    offsetY?: number
+    offsetZ?: number
+
+    ambientIntensity?: number
+    directionalIntensity?: number
+
+    transparent?: boolean
+    showDebug?: boolean
+
+    style?: React.CSSProperties
+}
+
+type NormalizedKeyframe = Required<CameraKeyframe>
+
+/* -------------------------------------------------------
+   UTILS
+------------------------------------------------------- */
+
+const clamp = (value: number, min = 0, max = 1) =>
+    Math.min(Math.max(value, min), max)
+
+const lerp = (from: number, to: number, progress: number) =>
+    from + (to - from) * progress
+
+const degToRad = (value: number) => THREE.MathUtils.degToRad(value)
+
+/* -------------------------------------------------------
+   NORMALIZE KEYFRAME
+------------------------------------------------------- */
+
+function normalizeKeyframe(
+    keyframe: CameraKeyframe,
+    fallbackProgress: number
+): NormalizedKeyframe {
+    return {
+        progress: keyframe.progress ?? fallbackProgress,
+
+        cameraX: keyframe.cameraX ?? 0,
+
+        cameraY: keyframe.cameraY ?? 0,
+
+        cameraZ: keyframe.cameraZ ?? 5,
+
+        targetX: keyframe.targetX ?? 0,
+
+        targetY: keyframe.targetY ?? 0,
+
+        targetZ: keyframe.targetZ ?? 0,
+
+        fov: keyframe.fov ?? 45,
+
+        rotationX: keyframe.rotationX ?? 0,
+
+        rotationY: keyframe.rotationY ?? 0,
+
+        rotationZ: keyframe.rotationZ ?? 0,
+
+        scale: keyframe.scale ?? 1,
+    }
+}
+
+/* -------------------------------------------------------
+   KEYFRAME INTERPOLATION
+------------------------------------------------------- */
+
+function interpolateKeyframes(
+    keyframes: NormalizedKeyframe[],
+    progress: number
+): NormalizedKeyframe {
+    if (keyframes.length === 0) {
+        return normalizeKeyframe({}, 0)
+    }
+
+    if (keyframes.length === 1) {
+        return keyframes[0]
+    }
+
+    const p = clamp(progress)
+
+    /*
+     * Hold first keyframe before its
+     * own progress point.
+     */
+
+    if (p <= keyframes[0].progress) {
+        return keyframes[0]
+    }
+
+    /*
+     * Hold last keyframe after end.
+     */
+
+    const last = keyframes[keyframes.length - 1]
+
+    if (p >= last.progress) {
+        return last
+    }
+
+    let from = keyframes[0]
+
+    let to = keyframes[1]
+
+    for (let i = 0; i < keyframes.length - 1; i++) {
+        const current = keyframes[i]
+
+        const next = keyframes[i + 1]
+
+        if (p >= current.progress && p <= next.progress) {
+            from = current
+            to = next
+            break
+        }
+    }
+
+    const range = to.progress - from.progress
+
+    const local = range <= 0 ? 0 : clamp((p - from.progress) / range)
+
+    return {
+        progress: p,
+
+        cameraX: lerp(from.cameraX, to.cameraX, local),
+
+        cameraY: lerp(from.cameraY, to.cameraY, local),
+
+        cameraZ: lerp(from.cameraZ, to.cameraZ, local),
+
+        targetX: lerp(from.targetX, to.targetX, local),
+
+        targetY: lerp(from.targetY, to.targetY, local),
+
+        targetZ: lerp(from.targetZ, to.targetZ, local),
+
+        fov: lerp(from.fov, to.fov, local),
+
+        rotationX: lerp(from.rotationX, to.rotationX, local),
+
+        rotationY: lerp(from.rotationY, to.rotationY, local),
+
+        rotationZ: lerp(from.rotationZ, to.rotationZ, local),
+
+        scale: lerp(from.scale, to.scale, local),
+    }
+}
+
+/* -------------------------------------------------------
+   COMPONENT
+------------------------------------------------------- */
+
+export default function Scroll3DDirector(props: Props) {
+    const {
+        modelUrl,
+        keyframes = [],
+
+        scrollHeight = 500,
+        smoothing = 6,
+
+        previewProgress = 0,
+
+        autoCenter = true,
+        autoFit = true,
+
+        baseScale = 1,
+
+        offsetX = 0,
+        offsetY = 0,
+        offsetZ = 0,
+
+        ambientIntensity = 0.6,
+        directionalIntensity = 2,
+
+        transparent = true,
+        showDebug = true,
+
+        style,
+    } = props
+
+    const sectionRef = React.useRef<HTMLDivElement>(null)
+
+    const canvasHostRef = React.useRef<HTMLDivElement>(null)
+
+    const targetProgress = React.useRef(0)
+
+    const smoothProgress = React.useRef(0)
+
+    const rafRef = React.useRef<number | null>(null)
+
+    const currentProgressRef = React.useRef(0)
+
+    const threeRef = React.useRef<{
+        renderer: THREE.WebGLRenderer
+
+        scene: THREE.Scene
+
+        camera: THREE.PerspectiveCamera
+
+        model: THREE.Object3D | null
+
+        modelRoot: THREE.Group
+
+        contentRoot: THREE.Group
+
+        resizeObserver: ResizeObserver
+    } | null>(null)
+
+    const [displayProgress, setDisplayProgress] = React.useState(0)
+
+    const [modelLoaded, setModelLoaded] = React.useState(false)
+
+    const [error, setError] = React.useState("")
+
+    const isCanvas = RenderTarget.current() === RenderTarget.canvas
+
+    /* ---------------------------------------------------
+       NORMALIZED KEYFRAMES
+    --------------------------------------------------- */
+
+    const normalizedKeyframes = React.useMemo(() => {
+        /*
+         * No user keyframes:
+         * stay completely static.
+         */
+        if (keyframes.length === 0) {
+            return [
+                normalizeKeyframe(
+                    {
+                        progress: 0,
+
+                        cameraX: 0,
+                        cameraY: 0,
+                        cameraZ: 5,
+
+                        targetX: 0,
+                        targetY: 0,
+                        targetZ: 0,
+
+                        fov: 45,
+
+                        rotationX: 0,
+                        rotationY: 0,
+                        rotationZ: 0,
+
+                        scale: 1,
+                    },
+                    0
+                ),
+            ]
+        }
+
+        return keyframes
+            .map((keyframe, index) => {
+                const fallback =
+                    keyframes.length === 1 ? 0 : index / (keyframes.length - 1)
+
+                return normalizeKeyframe(keyframe, fallback)
+            })
+            .sort((a, b) => a.progress - b.progress)
+    }, [keyframes])
+
+    /* ---------------------------------------------------
+       APPLY STATE
+    --------------------------------------------------- */
+
+    const applyState = React.useCallback(
+        (progress: number, forceRender = true) => {
+            const three = threeRef.current
+
+            if (!three) return
+
+            const p = clamp(progress)
+
+            currentProgressRef.current = p
+
+            const state = interpolateKeyframes(normalizedKeyframes, p)
+
+            /* Camera position */
+
+            three.camera.position.set(
+                state.cameraX,
+                state.cameraY,
+                state.cameraZ
+            )
+
+            /* Camera FOV */
+
+            three.camera.fov = state.fov
+
+            three.camera.updateProjectionMatrix()
+
+            /* Camera target */
+
+            three.camera.lookAt(state.targetX, state.targetY, state.targetZ)
+
+            /* Object rotation */
+
+            three.modelRoot.rotation.set(
+                degToRad(state.rotationX),
+                degToRad(state.rotationY),
+                degToRad(state.rotationZ)
+            )
+
+            /* Object scale */
+
+            three.modelRoot.scale.setScalar(state.scale)
+
+            if (forceRender) {
+                three.renderer.render(three.scene, three.camera)
+            }
+
+            if (showDebug) {
+                setDisplayProgress(Math.round(p * 100))
+            }
+        },
+        [normalizedKeyframes, showDebug]
+    )
+
+    /* ---------------------------------------------------
+       THREE.JS SETUP
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        const host = canvasHostRef.current
+
+        if (!host) return
+
+        setError("")
+        setModelLoaded(false)
+
+        const scene = new THREE.Scene()
+
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            powerPreference: "high-performance",
+        })
+
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+
+        renderer.outputColorSpace = THREE.SRGBColorSpace
+
+        renderer.setClearColor(0x000000, transparent ? 0 : 1)
+
+        renderer.shadowMap.enabled = false
+
+        const canvas = renderer.domElement
+
+        canvas.style.width = "100%"
+
+        canvas.style.height = "100%"
+
+        canvas.style.display = "block"
+
+        canvas.style.background = "transparent"
+
+        canvas.style.pointerEvents = "none"
+
+        host.appendChild(canvas)
+
+        /* Camera */
+
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 1000)
+
+        camera.position.set(0, 0, 5)
+
+        /* Model hierarchy */
+
+        const modelRoot = new THREE.Group()
+
+        const contentRoot = new THREE.Group()
+
+        modelRoot.add(contentRoot)
+
+        scene.add(modelRoot)
+
+        /* Lighting */
+
+        const ambient = new THREE.AmbientLight(0xffffff, ambientIntensity)
+
+        scene.add(ambient)
+
+        const keyLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity
+        )
+
+        keyLight.position.set(4, 5, 6)
+
+        scene.add(keyLight)
+
+        const fillLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity * 0.45
+        )
+
+        fillLight.position.set(-4, 2, 3)
+
+        scene.add(fillLight)
+
+        const rimLight = new THREE.DirectionalLight(
+            0xffffff,
+            directionalIntensity * 0.3
+        )
+
+        rimLight.position.set(0, 4, -5)
+
+        scene.add(rimLight)
+
+        /* Resize */
+
+        const resize = () => {
+            const width = host.clientWidth
+
+            const height = host.clientHeight
+
+            if (width <= 0 || height <= 0) {
+                return
+            }
+
+            renderer.setSize(width, height, false)
+
+            camera.aspect = width / height
+
+            camera.updateProjectionMatrix()
+
+            /*
+             * Re-apply current state
+             * after resize.
+             */
+            const state = interpolateKeyframes(
+                normalizedKeyframes,
+                currentProgressRef.current
+            )
+
+            camera.position.set(state.cameraX, state.cameraY, state.cameraZ)
+
+            camera.fov = state.fov
+
+            camera.updateProjectionMatrix()
+
+            camera.lookAt(state.targetX, state.targetY, state.targetZ)
+
+            modelRoot.rotation.set(
+                degToRad(state.rotationX),
+                degToRad(state.rotationY),
+                degToRad(state.rotationZ)
+            )
+
+            modelRoot.scale.setScalar(state.scale)
+
+            renderer.render(scene, camera)
+        }
+
+        const resizeObserver = new ResizeObserver(resize)
+
+        resizeObserver.observe(host)
+
+        resize()
+
+        threeRef.current = {
+            renderer,
+            scene,
+            camera,
+
+            model: null,
+
+            modelRoot,
+            contentRoot,
+
+            resizeObserver,
+        }
+
+        /* ------------------------------------------------
+           LOAD GLB / GLTF
+        ------------------------------------------------ */
+
+        if (modelUrl) {
+            const loader = new GLTFLoader()
+
+            loader.load(
+                modelUrl,
+
+                (gltf) => {
+                    const three = threeRef.current
+
+                    if (!three) return
+
+                    const model = gltf.scene
+
+                    /* Clear */
+
+                    contentRoot.clear()
+
+                    /* Reset model */
+
+                    model.position.set(0, 0, 0)
+
+                    model.rotation.set(0, 0, 0)
+
+                    model.scale.set(1, 1, 1)
+
+                    contentRoot.position.set(0, 0, 0)
+
+                    contentRoot.scale.set(1, 1, 1)
+
+                    contentRoot.add(model)
+
+                    three.model = model
+
+                    /* Bounds */
+
+                    model.updateMatrixWorld(true)
+
+                    const originalBox = new THREE.Box3().setFromObject(model)
+
+                    const originalSize = new THREE.Vector3()
+
+                    originalBox.getSize(originalSize)
+
+                    /* Auto fit */
+
+                    let fitScale = 1
+
+                    if (autoFit) {
+                        const maxDimension = Math.max(
+                            originalSize.x,
+                            originalSize.y,
+                            originalSize.z
+                        )
+
+                        if (maxDimension > 0) {
+                            const desiredSize = 3
+
+                            fitScale = desiredSize / maxDimension
+                        }
+                    }
+
+                    contentRoot.scale.setScalar(fitScale * baseScale)
+
+                    contentRoot.updateMatrixWorld(true)
+
+                    /* Auto center */
+
+                    const fittedBox = new THREE.Box3().setFromObject(
+                        contentRoot
+                    )
+
+                    const fittedCenter = new THREE.Vector3()
+
+                    fittedBox.getCenter(fittedCenter)
+
+                    if (autoCenter) {
+                        contentRoot.position.set(
+                            -fittedCenter.x,
+                            -fittedCenter.y,
+                            -fittedCenter.z
+                        )
+                    }
+
+                    /* User offsets */
+
+                    contentRoot.position.x += offsetX
+
+                    contentRoot.position.y += offsetY
+
+                    contentRoot.position.z += offsetZ
+
+                    contentRoot.updateMatrixWorld(true)
+
+                    setModelLoaded(true)
+
+                    /*
+                     * IMPORTANT:
+                     *
+                     * Apply exact correct pose
+                     * immediately after load.
+                     */
+
+                    const initialProgress = isCanvas
+                        ? clamp(previewProgress / 100)
+                        : targetProgress.current
+
+                    currentProgressRef.current = initialProgress
+
+                    const state = interpolateKeyframes(
+                        normalizedKeyframes,
+                        initialProgress
+                    )
+
+                    camera.position.set(
+                        state.cameraX,
+                        state.cameraY,
+                        state.cameraZ
+                    )
+
+                    camera.fov = state.fov
+
+                    camera.updateProjectionMatrix()
+
+                    camera.lookAt(state.targetX, state.targetY, state.targetZ)
+
+                    modelRoot.rotation.set(
+                        degToRad(state.rotationX),
+                        degToRad(state.rotationY),
+                        degToRad(state.rotationZ)
+                    )
+
+                    modelRoot.scale.setScalar(state.scale)
+
+                    renderer.render(scene, camera)
+
+                    if (showDebug) {
+                        setDisplayProgress(Math.round(initialProgress * 100))
+                    }
+                },
+
+                undefined,
+
+                (loadError) => {
+                    console.error(loadError)
+
+                    setError("Could not load 3D model.")
+                }
+            )
+        }
+
+        return () => {
+            resizeObserver.disconnect()
+
+            threeRef.current = null
+
+            renderer.dispose()
+
+            if (canvas.parentElement === host) {
+                host.removeChild(canvas)
+            }
+
+            scene.traverse((object) => {
+                const mesh = object as THREE.Mesh
+
+                mesh.geometry?.dispose()
+
+                const material = mesh.material as
+                    | THREE.Material
+                    | THREE.Material[]
+                    | undefined
+
+                if (Array.isArray(material)) {
+                    material.forEach((item) => item.dispose())
+                } else {
+                    material?.dispose()
+                }
+            })
+        }
+    }, [
+        modelUrl,
+
+        autoCenter,
+        autoFit,
+
+        baseScale,
+
+        offsetX,
+        offsetY,
+        offsetZ,
+
+        ambientIntensity,
+        directionalIntensity,
+
+        transparent,
+
+        normalizedKeyframes,
+
+        previewProgress,
+        isCanvas,
+
+        showDebug,
+    ])
+
+    /* ---------------------------------------------------
+       SCROLL TRACKING
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        if (isCanvas) return
+
+        const section = sectionRef.current
+
+        if (!section) return
+
+        const updateScroll = () => {
+            const rect = section.getBoundingClientRect()
+
+            const distance = section.offsetHeight - window.innerHeight
+
+            if (distance <= 0) {
+                targetProgress.current = 0
+
+                return
+            }
+
+            targetProgress.current = clamp(-rect.top / distance)
+        }
+
+        updateScroll()
+
+        /*
+         * Set initial preview/published
+         * scroll progress immediately.
+         */
+
+        smoothProgress.current = targetProgress.current
+
+        currentProgressRef.current = targetProgress.current
+
+        window.addEventListener("scroll", updateScroll, {
+            passive: true,
+        })
+
+        window.addEventListener("resize", updateScroll)
+
+        return () => {
+            window.removeEventListener("scroll", updateScroll)
+
+            window.removeEventListener("resize", updateScroll)
+        }
+    }, [isCanvas])
+
+    /* ---------------------------------------------------
+       CANVAS PREVIEW UPDATE
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        if (!isCanvas) return
+
+        const progress = clamp(previewProgress / 100)
+
+        currentProgressRef.current = progress
+
+        applyState(progress, true)
+    }, [isCanvas, previewProgress, applyState])
+
+    /* ---------------------------------------------------
+       PREVIEW / PUBLISHED ANIMATION
+    --------------------------------------------------- */
+
+    React.useEffect(() => {
+        if (isCanvas) return
+
+        let destroyed = false
+
+        const renderLoop = () => {
+            if (destroyed) return
+
+            const target = targetProgress.current
+
+            const current = smoothProgress.current
+
+            const easing =
+                smoothing <= 0 ? 1 : Math.max(0.08, 1 - smoothing / 100)
+
+            let next = current + (target - current) * easing
+
+            if (Math.abs(target - next) < 0.0001) {
+                next = target
+            }
+
+            smoothProgress.current = next
+
+            currentProgressRef.current = next
+
+            applyState(next, true)
+
+            rafRef.current = requestAnimationFrame(renderLoop)
+        }
+
+        rafRef.current = requestAnimationFrame(renderLoop)
+
+        return () => {
+            destroyed = true
+
+            if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current)
+            }
+        }
+    }, [isCanvas, smoothing, applyState])
+
+    /* ---------------------------------------------------
+       UI
+    --------------------------------------------------- */
+
+    return (
+        <div
+            ref={sectionRef}
+            style={{
+                ...style,
+
+                position: "relative",
+
+                width: "100%",
+
+                height: isCanvas ? "100%" : `${scrollHeight}vh`,
+
+                background: "transparent",
+
+                pointerEvents: "none",
+            }}
+        >
+            <div
+                style={{
+                    position: isCanvas ? "relative" : "sticky",
+
+                    top: 0,
+
+                    width: "100%",
+
+                    height: isCanvas ? "100%" : "100vh",
+
+                    overflow: "clip",
+
+                    background: "transparent",
+
+                    pointerEvents: "none",
+                }}
+            >
+                <div
+                    ref={canvasHostRef}
+                    style={{
+                        position: "absolute",
+
+                        inset: 0,
+
+                        width: "100%",
+
+                        height: "100%",
+
+                        background: "transparent",
+
+                        pointerEvents: "none",
+                    }}
+                />
+
+                {!modelUrl && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            inset: 0,
+
+                            display: "grid",
+
+                            placeItems: "center",
+
+                            color: "rgba(0,0,0,.45)",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 13,
+                        }}
+                    >
+                        Add a GLB or glTF URL
+                    </div>
+                )}
+
+                {modelUrl && !modelLoaded && !error && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            inset: 0,
+
+                            display: "grid",
+
+                            placeItems: "center",
+
+                            color: "rgba(0,0,0,.45)",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 12,
+                        }}
+                    >
+                        Loading 3D…
+                    </div>
+                )}
+
+                {error && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            left: 20,
+                            bottom: 20,
+
+                            padding: "8px 10px",
+
+                            borderRadius: 8,
+
+                            background: "rgba(0,0,0,.7)",
+
+                            color: "#fff",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 12,
+                        }}
+                    >
+                        {error}
+                    </div>
+                )}
+
+                {showDebug && (
+                    <div
+                        style={{
+                            position: "absolute",
+
+                            right: 20,
+                            bottom: 20,
+
+                            padding: "7px 10px",
+
+                            borderRadius: 999,
+
+                            background: "rgba(0,0,0,.65)",
+
+                            color: "#fff",
+
+                            fontFamily: "Inter, sans-serif",
+
+                            fontSize: 11,
+
+                            pointerEvents: "none",
+                        }}
+                    >
+                        {displayProgress}%
+                    </div>
+                )}
+            </div>
+        </div>
+    )
+}
+
+/* -------------------------------------------------------
+   PROPERTY CONTROLS
+------------------------------------------------------- */
+
+addPropertyControls(Scroll3DDirector, {
+    modelUrl: {
+        type: ControlType.String,
+
+        title: "Model URL",
+
+        placeholder: "https://.../model.glb",
+    },
+
+    previewProgress: {
+        type: ControlType.Number,
+
+        title: "Preview",
+
+        min: 0,
+        max: 100,
+
+        step: 1,
+
+        unit: "%",
+
+        defaultValue: 0,
+    },
+
+    keyframes: {
+        type: ControlType.Array,
+
+        title: "Keyframes",
+
+        maxCount: 12,
+
+        control: {
+            type: ControlType.Object,
+
+            controls: {
+                progress: {
+                    type: ControlType.Number,
+
+                    title: "Progress",
+
+                    min: 0,
+                    max: 1,
+
+                    step: 0.01,
+
+                    defaultValue: 0,
+                },
+
+                cameraX: {
+                    type: ControlType.Number,
+
+                    title: "Camera X",
+
+                    min: -20,
+                    max: 20,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                cameraY: {
+                    type: ControlType.Number,
+
+                    title: "Camera Y",
+
+                    min: -20,
+                    max: 20,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                cameraZ: {
+                    type: ControlType.Number,
+
+                    title: "Camera Z",
+
+                    min: -20,
+                    max: 30,
+
+                    step: 0.1,
+
+                    defaultValue: 5,
+                },
+
+                targetX: {
+                    type: ControlType.Number,
+
+                    title: "Target X",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                targetY: {
+                    type: ControlType.Number,
+
+                    title: "Target Y",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                targetZ: {
+                    type: ControlType.Number,
+
+                    title: "Target Z",
+
+                    min: -10,
+                    max: 10,
+
+                    step: 0.1,
+
+                    defaultValue: 0,
+                },
+
+                fov: {
+                    type: ControlType.Number,
+
+                    title: "FOV",
+
+                    min: 10,
+                    max: 100,
+
+                    step: 1,
+
+                    defaultValue: 45,
+                },
+
+                rotationX: {
+                    type: ControlType.Number,
+
+                    title: "Rotate X",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                rotationY: {
+                    type: ControlType.Number,
+
+                    title: "Rotate Y",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                rotationZ: {
+                    type: ControlType.Number,
+
+                    title: "Rotate Z",
+
+                    min: -720,
+                    max: 720,
+
+                    step: 1,
+
+                    unit: "°",
+
+                    defaultValue: 0,
+                },
+
+                scale: {
+                    type: ControlType.Number,
+
+                    title: "Scale",
+
+                    min: 0.1,
+                    max: 10,
+
+                    step: 0.05,
+
+                    defaultValue: 1,
+                },
+            },
+        },
+    },
+
+    scrollHeight: {
+        type: ControlType.Number,
+
+        title: "Scroll",
+
+        min: 150,
+        max: 1500,
+
+        step: 50,
+
+        unit: "vh",
+
+        defaultValue: 500,
+    },
+
+    smoothing: {
+        type: ControlType.Number,
+
+        title: "Smooth",
+
+        min: 0,
+        max: 40,
+
+        step: 1,
+
+        defaultValue: 6,
+    },
+
+    autoCenter: {
+        type: ControlType.Boolean,
+
+        title: "Center",
+
+        defaultValue: true,
+    },
+
+    autoFit: {
+        type: ControlType.Boolean,
+
+        title: "Auto Fit",
+
+        defaultValue: true,
+    },
+
+    baseScale: {
+        type: ControlType.Number,
+
+        title: "Base Scale",
+
+        min: 0.1,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 1,
+    },
+
+    offsetX: {
+        type: ControlType.Number,
+
+        title: "Offset X",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    offsetY: {
+        type: ControlType.Number,
+
+        title: "Offset Y",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    offsetZ: {
+        type: ControlType.Number,
+
+        title: "Offset Z",
+
+        min: -5,
+        max: 5,
+
+        step: 0.05,
+
+        defaultValue: 0,
+    },
+
+    ambientIntensity: {
+        type: ControlType.Number,
+
+        title: "Ambient",
+
+        min: 0,
+        max: 10,
+
+        step: 0.1,
+
+        defaultValue: 0.6,
+    },
+
+    directionalIntensity: {
+        type: ControlType.Number,
+
+        title: "Key Light",
+
+        min: 0,
+        max: 10,
+
+        step: 0.1,
+
+        defaultValue: 2,
+    },
+
+    transparent: {
+        type: ControlType.Boolean,
+
+        title: "Transparent",
+
+        defaultValue: true,
+    },
+
+    showDebug: {
+        type: ControlType.Boolean,
+
+        title: "Debug",
+
+        defaultValue: true,
+    },
+})
